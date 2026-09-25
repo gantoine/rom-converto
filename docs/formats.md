@@ -100,6 +100,10 @@ container. NCAs with sparse layers or AES-XTS sections are rejected. Signatures 
 longer valid, so the output loads only in NxEmu and other emulators keep using the
 encrypted NSP/XCI.
 
+NCAs that are already plaintext (`DNCA` magic, or hactool `--plaintext` output with
+its `NCA3` magic) are read as they are by `nx verify` and `nx info`; `nx decrypt`
+accepts hactool plaintext NSPs and rewrites only the NCA headers.
+
 ### CHD
 
 CHD mode is chosen from the input: CUE input makes a CD CHD, suitable ISO input is

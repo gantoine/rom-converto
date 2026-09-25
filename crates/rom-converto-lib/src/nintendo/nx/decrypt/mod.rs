@@ -19,7 +19,9 @@ use std::sync::Arc;
 use sha2::{Digest, Sha256};
 
 use crate::nintendo::nx::constants::HFS0_ENTRY_SIZE;
-use crate::nintendo::nx::container::{ContainerKind, list_container, read_xci_hfs0_offset};
+use crate::nintendo::nx::container::{
+    ContainerKind, DXCI_MAGIC, list_container, read_xci_hfs0_offset,
+};
 use crate::nintendo::nx::error::{NxError, NxResult};
 use crate::nintendo::nx::keys::KeySet;
 use crate::nintendo::nx::meta::merge_inline_tickets;
@@ -31,7 +33,6 @@ use crate::util::{AtomicProgress, CancelToken, ProgressReporter, run_scratch_wri
 use nca::NcaPlainPlan;
 
 const XCI_MAGIC_OFFSET: usize = 0x100;
-const DXCI_MAGIC: [u8; 4] = *b"DXCI";
 const XCI_ROOT_HEADER_SIZE_OFFSET: usize = 0x138;
 const XCI_ROOT_HEADER_HASH_OFFSET: usize = 0x140;
 /// Gamecard header length; the root HFS0 can never start inside it.
@@ -45,8 +46,10 @@ const HFS0_ENTRY_HASH_OFFSET: usize = 0x20;
 ///
 /// # Errors
 /// Fails if `input` is compressed (NSZ/XCZ), if a needed key is
-/// missing, if an NCA is already decrypted, uses XTS or sparse
-/// sections, or on the underlying I/O and parsing errors.
+/// missing, if an NCA already carries the `DNCA` magic, if a section
+/// uses XTS (encrypted input only) or a sparse layer, or on the
+/// underlying I/O and parsing errors. hactool plaintext NCAs are
+/// accepted and only get their headers rewritten.
 pub fn decrypt_container(
     input: &Path,
     output: &Path,
@@ -410,6 +413,42 @@ mod tests {
         // Everything outside the patched headers and the NCA is untouched.
         assert_eq!(&out[0x160..hfs0_off], &xci[0x160..hfs0_off]);
         assert_eq!(&out[nca_abs + plain.len()..], &xci[nca_abs + plain.len()..]);
+    }
+
+    /// hactool `--plaintext` output: the XTS-decrypted header as is
+    /// (`NCA3` magic, FS headers still claiming CTR) over decrypted
+    /// sections. Only the header rewrite is left to do, and no key is
+    /// needed for it.
+    #[test]
+    fn hactool_plaintext_nca_gets_only_its_header_rewritten() {
+        let nca = build_meta_nca(
+            0x0100_0000_0000_3000,
+            1,
+            CNMT_CONTENT_TYPE_PROGRAM,
+            &[[0xEF; 16]],
+        );
+        let dir = TempDir::new().unwrap();
+        let expected = expected_plain_meta_nca(&dir, &nca);
+        let mut hactool = expected.clone();
+        let mut header = [0u8; NCA_HEADER_SIZE];
+        header.copy_from_slice(&nca[..NCA_HEADER_SIZE]);
+        decrypt_nca_header(&mut header, &TEST_HEADER_KEY).unwrap();
+        hactool[..NCA_HEADER_SIZE].copy_from_slice(&header);
+        assert_eq!(&hactool[0x200..0x204], b"NCA3");
+
+        let file = Arc::new(File::open(write_temp(&dir, "h.nca", &hactool)).unwrap());
+        let plan = NcaPlainPlan::open(
+            file.clone(),
+            0,
+            hactool.len() as u64,
+            "h.nca",
+            &KeySet::default(),
+        )
+        .unwrap();
+        let mut out = Vec::new();
+        plan.write_plain(&file, 0, &mut out, &NoProgress, None)
+            .unwrap();
+        assert_eq!(out, expected);
     }
 
     #[test]

@@ -15,7 +15,8 @@
 //!   everything after them under the FS header's IV.
 //!
 //! `AesXts` (2) sections and sparse layers are rejected; neither
-//! NxEmu nor hactool handle them.
+//! NxEmu nor hactool handle them. A hactool `--plaintext` NCA (clear
+//! `NCA3` header and sections) only needs the header rewrite.
 
 use std::fs::File;
 use std::io::Write;
@@ -24,16 +25,16 @@ use std::sync::Arc;
 use sha2::{Digest, Sha256};
 
 use crate::nintendo::nx::constants::{
-    ENC_AES_CTR, ENC_AES_CTR_EX, ENC_AES_CTR_EX_SKIP_LAYER_HASH, ENC_AES_CTR_SKIP_LAYER_HASH,
-    ENC_AES_XTS, ENC_NONE, NCA_FS_HEADER_OFFSET, NCA_FS_HEADER_STRIDE, NCA_HEADER_SIZE,
-    NCA_XTS_SECTOR, PFS0_MAGIC,
+    DNCA_MAGIC, ENC_AES_CTR, ENC_AES_CTR_EX, ENC_AES_CTR_EX_SKIP_LAYER_HASH,
+    ENC_AES_CTR_SKIP_LAYER_HASH, ENC_AES_XTS, ENC_NONE, NCA_FS_HEADER_OFFSET, NCA_FS_HEADER_STRIDE,
+    NCA_HEADER_SIZE, NCA_XTS_SECTOR, PFS0_MAGIC,
 };
 use crate::nintendo::nx::crypto::aes_ctr::apply_ctr_at;
 use crate::nintendo::nx::decrypt::bucket_tree;
 use crate::nintendo::nx::error::{NxError, NxResult};
 use crate::nintendo::nx::keys::KeySet;
 use crate::nintendo::nx::models::nca::{
-    FS_TYPE_PARTITION_FS, FS_TYPE_ROMFS, HASH_TYPE_HIERARCHICAL_INTEGRITY,
+    FS_TYPE_PARTITION_FS, FS_TYPE_ROMFS, FsHeader, HASH_TYPE_HIERARCHICAL_INTEGRITY,
     HASH_TYPE_HIERARCHICAL_SHA256,
 };
 use crate::nintendo::nx::romfs::ROMFS_HEADER_SIZE;
@@ -42,7 +43,6 @@ use crate::util::bytes::u64_le;
 use crate::util::pread::file_read_exact_at;
 use crate::util::{CancelToken, Cancelled, ProgressReporter};
 
-pub const DNCA_MAGIC: [u8; 4] = *b"DNCA";
 const FS_HEADER_HASH_OFFSET: usize = 0x280;
 const FS_HEADER_ENCRYPTION_TYPE: usize = 0x04;
 const CHUNK: usize = 4 * 1024 * 1024;
@@ -92,7 +92,14 @@ impl NcaPlainPlan {
             if section_end.is_none_or(|end| end > size) {
                 return Err(NxError::NcaTruncated(name.to_string()));
             }
-            section_runs(&walker, section, name, &mut runs)?;
+            check_section_layout(
+                &walker.header.fs_headers[section.index],
+                section.index,
+                name,
+            )?;
+            if !walker.plaintext {
+                section_runs(&walker, section, name, &mut runs)?;
+            }
         }
         runs.sort_by_key(|r| r.start);
         if runs.windows(2).any(|w| w[0].end > w[1].start) {
@@ -110,8 +117,10 @@ impl NcaPlainPlan {
             runs,
             size,
         };
-        for section in &walker.sections {
-            plan.check_key(&file, nca_offset, &walker, section, name)?;
+        if !walker.plaintext {
+            for section in &walker.sections {
+                plan.check_key(&file, nca_offset, &walker, section, name)?;
+            }
         }
         Ok(plan)
     }
@@ -221,6 +230,29 @@ impl NcaPlainPlan {
     }
 }
 
+/// Rejects section layouts NxEmu cannot mount, whatever the input's
+/// encryption state: sparse layers, and any hash type other than the
+/// SHA-256 and integrity layers.
+fn check_section_layout(fs: &FsHeader, index: usize, name: &str) -> NxResult<()> {
+    if fs.sparse_generation != 0 {
+        return Err(NxError::SparseSectionUnsupported {
+            nca: name.to_string(),
+            section: index,
+        });
+    }
+    if !matches!(
+        fs.hash_type,
+        HASH_TYPE_HIERARCHICAL_SHA256 | HASH_TYPE_HIERARCHICAL_INTEGRITY
+    ) {
+        return Err(NxError::UnsupportedHashType {
+            nca: name.to_string(),
+            section: index,
+            hash_type: fs.hash_type,
+        });
+    }
+    Ok(())
+}
+
 /// Appends the CTR runs of one section to `runs`.
 fn section_runs(
     walker: &NcaWalker,
@@ -229,24 +261,6 @@ fn section_runs(
     runs: &mut Vec<CtrRun>,
 ) -> NxResult<()> {
     let fs = walker.header.fs_headers[section.index];
-    if fs.sparse_generation != 0 {
-        return Err(NxError::SparseSectionUnsupported {
-            nca: name.to_string(),
-            section: section.index,
-        });
-    }
-    // NxEmu mounts only the SHA-256 and integrity hash layers; any
-    // other hash type would convert into a DNCA it refuses to open.
-    if !matches!(
-        fs.hash_type,
-        HASH_TYPE_HIERARCHICAL_SHA256 | HASH_TYPE_HIERARCHICAL_INTEGRITY
-    ) {
-        return Err(NxError::UnsupportedHashType {
-            nca: name.to_string(),
-            section: section.index,
-            hash_type: fs.hash_type,
-        });
-    }
     let start = section.raw_offset - walker.nca_offset();
     let end = start + section.raw_size;
     let header_iv = ctr_iv(section.section_ctr_high, section.section_ctr_low);
@@ -644,6 +658,21 @@ mod tests {
         tmp.write_all(&nca).unwrap();
         let file = Arc::new(File::open(tmp.path()).unwrap());
         let err = NcaPlainPlan::open(file, 0, nca.len() as u64, "a.nca", &synthetic_keyset())
+            .err()
+            .unwrap();
+        assert!(matches!(
+            err,
+            NxError::SparseSectionUnsupported { section: 0, .. }
+        ));
+
+        // The same layout guard fires on a hactool plaintext NCA, whose
+        // header is stored in the clear and needs no key.
+        let mut hactool = nca.clone();
+        hactool[..NCA_HEADER_SIZE].copy_from_slice(&header);
+        let mut tmp = NamedTempFile::new().unwrap();
+        tmp.write_all(&hactool).unwrap();
+        let file = Arc::new(File::open(tmp.path()).unwrap());
+        let err = NcaPlainPlan::open(file, 0, hactool.len() as u64, "h.nca", &KeySet::default())
             .err()
             .unwrap();
         assert!(matches!(

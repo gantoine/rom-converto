@@ -396,7 +396,7 @@ rom-converto nx <SUBCOMMAND> <INPUT>
 | `decrypt <INPUT> [OUTPUT]` | Convert an encrypted NSP/XCI to an NxEmu DNSP/DXCI |
 | `merge <INPUT>... [-o OUTPUT]` | Combine base, update, or DLC containers into one NSP or XCI |
 | `split <INPUT> [--output-dir DIR]` | Write one NSP per title from an NSP or XCI |
-| `verify <INPUT>` | Check NCA hashes, including in compressed containers |
+| `verify <INPUT>` | Check NCA hashes, including in compressed and decrypted containers |
 | `info <INPUT>` | Inspect container metadata. See [info](#info) |
 
 | Flag | Applies to | Description |
@@ -420,6 +420,12 @@ tickets and certificates are copied through. Title keys come from the tickets bu
 in the container. NCAs with sparse layers or AES-XTS sections are rejected, and NSZ/XCZ
 inputs must be decompressed first. Output signatures are not valid, so it loads only in
 NxEmu; other emulators keep using the encrypted NSP/XCI.
+
+Already decrypted NCAs are recognised by their plaintext header: NxEmu's `DNCA` magic,
+or hactool `--plaintext` output, which keeps the `NCA3` magic. `nx verify` and `nx info`
+read both as they are, and `nx decrypt` turns an NSP of hactool plaintext NCAs into a
+DNSP by rewriting only the headers. Compressing, merging, or splitting a decrypted
+container keeps its NCAs decrypted, so that output also loads only in NxEmu.
 
 ### Merge and split
 

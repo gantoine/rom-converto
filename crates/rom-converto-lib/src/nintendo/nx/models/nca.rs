@@ -6,7 +6,7 @@ use byteorder::{LE, ReadBytesExt};
 use std::io::Cursor;
 
 use crate::nintendo::nx::constants::{
-    NCA_FS_ENTRY_OFFSET, NCA_FS_HEADER_OFFSET, NCA_FS_HEADER_STRIDE, NCA_HEADER_SIZE,
+    DNCA_MAGIC, NCA_FS_ENTRY_OFFSET, NCA_FS_HEADER_OFFSET, NCA_FS_HEADER_STRIDE, NCA_HEADER_SIZE,
     NCA_MAX_SECTIONS, NCA3_MAGIC,
 };
 use crate::nintendo::nx::crypto::derive::{KEY_AREA_OFFSET, KEY_AREA_TOTAL};
@@ -132,16 +132,16 @@ impl PatchInfo {
 
 impl NcaHeader {
     /// Parses a fixed `NCA_HEADER_SIZE` plaintext buffer as an NCA3
-    /// header: validates the magic at 0x200, then reads content
-    /// metadata, the `FsEntry`/`FsHeader` tables, and the encrypted key
-    /// area.
+    /// header: validates the magic at 0x200 (`NCA3`, or `DNCA` for an
+    /// NxEmu-decrypted NCA), then reads content metadata, the
+    /// `FsEntry`/`FsHeader` tables, and the encrypted key area.
     ///
     /// # Errors
     ///
     /// Returns [`NxError::InvalidNcaHeader`] if the magic at 0x200
-    /// doesn't match `NCA3_MAGIC`.
+    /// matches neither `NCA3_MAGIC` nor `DNCA_MAGIC`.
     pub fn parse(buf: &[u8; NCA_HEADER_SIZE]) -> NxResult<Self> {
-        if buf[0x200..0x204] != NCA3_MAGIC {
+        if buf[0x200..0x204] != NCA3_MAGIC && buf[0x200..0x204] != DNCA_MAGIC {
             return Err(NxError::InvalidNcaHeader);
         }
         let content_type = buf[0x205];
