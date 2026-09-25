@@ -83,7 +83,7 @@ pub fn verify_container(
         }
         let mut buf = vec![0u8; entry.size as usize];
         file_read_exact_at(&in_file, &mut buf, entry.abs_offset)?;
-        if let Ok(ticket) = Ticket::parse(&buf) {
+        if let Some(ticket) = Ticket::parse(&buf).ok().filter(|t| !t.personalized) {
             keys.title_keys
                 .insert(ticket.rights_id, ticket.encrypted_title_key);
         }

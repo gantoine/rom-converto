@@ -173,6 +173,10 @@
       "nx",
       "decompress"
     ],
+    "nx.decrypt": [
+      "nx",
+      "decrypt"
+    ],
     "nx.merge": [
       "nx",
       "merge"
@@ -861,6 +865,15 @@
       "recursive",
       "report"
     ],
+    "nx.decrypt": [
+      "keys",
+      "max_depth",
+      "on_conflict",
+      "output_dir",
+      "output_template",
+      "recursive",
+      "report"
+    ],
     "nx.merge": [
       "format",
       "keys",
@@ -1051,6 +1064,7 @@
     "ntr.encrypt": "positional",
     "nx.compress": "positional",
     "nx.decompress": "positional",
+    "nx.decrypt": "positional",
     "nx.merge": "output_flag",
     "nx.split": "output_dir",
     "nx.verify": "none",

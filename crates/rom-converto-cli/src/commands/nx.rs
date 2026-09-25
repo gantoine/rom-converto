@@ -18,6 +18,7 @@ use rom_converto_lib::util::{CancelToken, ConflictPolicy, FileStatus};
 pub enum NxCommands {
     Compress(NxCompressCommand),
     Decompress(NxDecompressCommand),
+    Decrypt(NxDecryptCommand),
     Verify(NxVerifyCommand),
     Merge(NxMergeCommand),
     Split(NxSplitCommand),
@@ -117,6 +118,48 @@ pub struct NxDecompressCommand {
     pub conflict: ConflictArgs,
 
     /// Decompress every .nsz and .xcz found in the INPUT directory and its subdirectories
+    #[arg(long, short = 'R', default_value_t = false)]
+    pub recursive: bool,
+
+    #[command(flatten)]
+    pub batch: BatchArgs,
+}
+
+/// Decrypt an NSP or XCI into NxEmu's DNSP or DXCI
+#[derive(Parser, Debug, Clone, Eq, PartialEq)]
+#[command(
+    long_about = "Decrypt an NSP or XCI into NxEmu's DNSP or DXCI\n\nEvery NCA is rewritten as plaintext and the container keeps its layout. The output only loads in NxEmu; other emulators use the encrypted NSP/XCI.",
+    after_long_help = "EXAMPLES:\n  Single file:     rom-converto nx decrypt game.nsp\n  Explicit output: rom-converto nx decrypt game.xci game.dxci\n  Whole folder:    rom-converto nx decrypt -R ./roms --output-dir ./nxemu\n"
+)]
+pub struct NxDecryptCommand {
+    /// Path to `prod.keys`. Defaults to `$HOME/.switch/prod.keys` on Linux/macOS or `%USERPROFILE%/.switch/prod.keys` on Windows, then the binary's own directory
+    #[arg(long = "keys", value_name = "PRODKEYS")]
+    pub keys: Option<PathBuf>,
+
+    /// Input NSP or XCI, or a directory with --recursive
+    #[arg(value_name = "INPUT")]
+    pub input: PathBuf,
+
+    /// Output path. Defaults to the input path with the extension switched (.nsp -> .dnsp, .xci -> .dxci)
+    #[arg(value_name = "OUTPUT")]
+    pub output: Option<PathBuf>,
+
+    /// Output path. Defaults to the input path with the extension switched (.nsp -> .dnsp, .xci -> .dxci)
+    #[arg(
+        short = 'o',
+        long = "output",
+        value_name = "OUTPUT",
+        conflicts_with = "output"
+    )]
+    pub output_flag: Option<PathBuf>,
+
+    #[command(flatten)]
+    pub out: OutputArgs,
+
+    #[command(flatten)]
+    pub conflict: ConflictArgs,
+
+    /// Decrypt every .nsp and .xci found in the INPUT directory and its subdirectories
     #[arg(long, short = 'R', default_value_t = false)]
     pub recursive: bool,
 
@@ -285,6 +328,32 @@ pub async fn run(command: NxCommands, ctx: DispatchCtx<'_>) -> Result<()> {
             batch::run(
                 &run,
                 "nx.decompress",
+                cmd.input,
+                cmd.output_flag.or(cmd.output),
+                options,
+            )
+            .await?;
+        }
+        NxCommands::Decrypt(cmd) => {
+            let eff = &effective.nx;
+            require_input(&cmd.input, cmd.recursive)?;
+            let mut options = RunOptions::from(batch::Common {
+                recursive: cmd.recursive,
+                output_dir: cmd.out.output_dir.or_else(|| eff.output_dir.clone()),
+                output_template: cmd.out.output_template,
+                max_depth: cmd.batch.max_depth,
+                report: cmd.batch.report.or_else(|| eff.report.clone()),
+                policy: resolve_policy(
+                    cmd.conflict.on_conflict,
+                    cmd.conflict.force,
+                    config::policy_fallback(&eff.on_conflict)?,
+                ),
+                skip_space_check,
+            });
+            options.keys = cmd.keys;
+            batch::run(
+                &run,
+                "nx.decrypt",
                 cmd.input,
                 cmd.output_flag.or(cmd.output),
                 options,

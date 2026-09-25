@@ -19,7 +19,10 @@ use crate::nintendo::nx::models::cnmt::CNMT_CONTENT_TYPE_PROGRAM;
 use crate::nintendo::nx::models::hfs0::{
     self as hfs0_mod, DEFAULT_HASHED_REGION, Hfs0FileSpec, Hfs0LayoutHints, hash_first_chunk,
 };
-use crate::nintendo::nx::models::nca::{CONTENT_TYPE_META, FsHeader, initial_ctr_for_offset};
+use crate::nintendo::nx::models::nca::{
+    CONTENT_TYPE_META, FS_TYPE_PARTITION_FS, FsHeader, HASH_TYPE_HIERARCHICAL_SHA256,
+    initial_ctr_for_offset,
+};
 use crate::nintendo::nx::models::pfs0::{self as pfs0_mod, Pfs0LayoutHints};
 use crate::nintendo::nx::models::xci::{MEDIA_UNIT, XCI_PREFIX_SIZE, build_xci_prefix};
 
@@ -171,7 +174,13 @@ pub fn build_meta_nca(
     header[entry_off + 4..entry_off + 8].copy_from_slice(&end_sector.to_le_bytes());
 
     let fs0_off = NCA_FS_HEADER_OFFSET;
+    header[fs0_off + 2] = FS_TYPE_PARTITION_FS;
+    header[fs0_off + 3] = HASH_TYPE_HIERARCHICAL_SHA256;
     header[fs0_off + 4] = ENC_AES_CTR;
+    // One hash layer over the whole section, whose data layer (the
+    // PFS0) starts at section offset 0.
+    header[fs0_off + 0x2C..fs0_off + 0x30].copy_from_slice(&2u32.to_le_bytes());
+    header[fs0_off + 0x48..fs0_off + 0x50].copy_from_slice(&(section.len() as u64).to_le_bytes());
     let ctr_low: u32 = 0;
     let ctr_high: u32 = 0;
     header[fs0_off + 0x140..fs0_off + 0x144].copy_from_slice(&ctr_low.to_le_bytes());

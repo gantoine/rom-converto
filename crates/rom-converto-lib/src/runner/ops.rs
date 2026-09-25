@@ -343,6 +343,15 @@ pub(crate) static OPS: &[OpSpec] = &[
         run: |req, progress, cancel| Box::pin(nx_decompress(req, progress, cancel)),
     },
     OpSpec {
+        name: "nx.decrypt",
+        aliases: &[],
+        batch_exts: Some(&["nsp", "xci"]),
+        input_exts: None,
+        writes_output: true,
+        required_bytes: None,
+        run: |req, progress, cancel| Box::pin(nx_decrypt(req, progress, cancel)),
+    },
+    OpSpec {
         name: "nx.verify",
         aliases: &[],
         batch_exts: Some(&["nsp", "xci", "nca", "nsz", "xcz", "ncz"]),
@@ -1611,6 +1620,36 @@ pub(crate) async fn nx_decompress(
         },
     )
     .await
+}
+
+pub(crate) async fn nx_decrypt(
+    req: RunRequest,
+    progress: &dyn ProgressReporter,
+    cancel: CancelToken,
+) -> Result<RunResponse> {
+    let input = required_input(&req)?;
+    let (keys, missing_keys) = nx_keys_for_run(&req)?;
+    let mut response = convert_op(
+        progress,
+        &req,
+        ConvertTarget {
+            input: &input,
+            derive: &|basis, _| crate::nintendo::nx::derive_decrypted_path(basis),
+            operation: "nx.decrypt",
+            verify: OutputVerify::None,
+        },
+        cancel,
+        |input, output, cancel| async move {
+            crate::nintendo::nx::decrypt_container_async(input, output, keys, progress, cancel)
+                .await
+                .map_err(anyhow::Error::from)
+        },
+    )
+    .await?;
+    if let Some(RunData::Plan(line)) = &mut response.data {
+        line.missing_keys = missing_keys;
+    }
+    Ok(response)
 }
 
 pub(crate) async fn nx_verify(
